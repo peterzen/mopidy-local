@@ -5,7 +5,7 @@ import time
 from mopidy import commands
 from mopidy.audio import scan, tags
 
-from mopidy_local import mtimes, storage, translator
+from mopidy_local import cue, mtimes, storage, translator
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,13 @@ class ScanCommand(commands.Command):
             timeout=config["local"]["scan_timeout"],
             flush_threshold=config["local"]["scan_flush_threshold"],
             limit=args.limit,
+        )
+
+        # Scan CUE files for virtual tracks
+        self._scan_cue_files(
+            media_dir=media_dir,
+            library=library,
+            file_mtimes=file_mtimes,
         )
 
         library.close()
@@ -269,6 +276,122 @@ class ScanCommand(commands.Command):
 
         progress.log()
         logger.info("Done scanning")
+
+    def _scan_cue_files(self, *, media_dir, library, file_mtimes):
+        """Scan CUE files and generate virtual tracks."""
+        from mopidy.models import Album, Artist, Track
+
+        logger.info("Scanning for CUE files...")
+        cue_files = list(cue.find_cue_files(media_dir))
+        logger.info(f"Found {len(cue_files)} CUE files")
+
+        for cue_path in cue_files:
+            try:
+                cue_sheet = cue.parse_cue_file(cue_path)
+                if not cue_sheet:
+                    continue
+
+                # Resolve the audio file
+                audio_file = cue.resolve_audio_file(cue_sheet)
+                if not audio_file or not audio_file.exists():
+                    logger.warning(
+                        f"Audio file for CUE {cue_path} not found, skipping"
+                    )
+                    continue
+
+                # Get audio file duration
+                scanner = scan.Scanner(timeout=5000)
+                scan_result = scanner.scan(audio_file.as_uri())
+                if not scan_result or not scan_result.duration:
+                    logger.warning(
+                        f"Could not determine duration for {audio_file}, skipping CUE"
+                    )
+                    continue
+
+                total_duration_ms = scan_result.duration
+                mtime = file_mtimes.get(cue_path, int(time.time() * 1000))
+
+                # Process each track in the CUE
+                for i, track_info in enumerate(cue_sheet.tracks):
+                    if not track_info.index:
+                        continue
+
+                    start_ms = track_info.index.milliseconds
+                    
+                    # Determine end time
+                    if i + 1 < len(cue_sheet.tracks):
+                        next_track = cue_sheet.tracks[i + 1]
+                        if next_track.index:
+                            end_ms = next_track.index.milliseconds
+                        else:
+                            end_ms = total_duration_ms
+                    else:
+                        end_ms = total_duration_ms
+
+                    # Calculate track length
+                    track_length = end_ms - start_ms
+
+                    # Generate virtual track URI
+                    # Using format: local:track:cuesheet-<hash>-<track_num>
+                    import hashlib
+                    cue_hash = hashlib.md5(
+                        str(cue_path).encode()
+                    ).hexdigest()[:8]
+                    virtual_uri = f"local:track:cuesheet-{cue_hash}-{track_info.number:02d}"
+
+                    # Create artist
+                    performer = (
+                        track_info.performer
+                        or cue_sheet.performer
+                        or "Unknown Artist"
+                    )
+                    artist_uri = f"local:artist:cue-{hashlib.md5(performer.encode()).hexdigest()[:8]}"
+                    artists = [
+                        Artist(uri=artist_uri, name=performer)
+                    ]
+
+                    # Create album
+                    album_name = cue_sheet.title or "Unknown Album"
+                    album_uri = f"local:album:cue-{cue_hash}"
+                    album = Album(
+                        uri=album_uri,
+                        name=album_name,
+                        artists=frozenset(artists),
+                        num_tracks=len(cue_sheet.tracks),
+                        date=cue_sheet.date,
+                    )
+
+                    # Create track
+                    track_title = track_info.title or f"Track {track_info.number}"
+                    virtual_track = Track(
+                        uri=virtual_uri,
+                        name=track_title,
+                        artists=frozenset(artists),
+                        album=album,
+                        track_no=track_info.number,
+                        date=cue_sheet.date,
+                        genre=cue_sheet.genre,
+                        length=track_length,
+                        last_modified=mtime,
+                    )
+
+                    # Add custom attributes for virtual track
+                    virtual_track.kind = "virtual"
+                    virtual_track.source = "cue"
+                    virtual_track.path = str(audio_file)
+                    virtual_track.start_ms = start_ms
+                    virtual_track.end_ms = end_ms
+
+                    # Add to library
+                    library.add(virtual_track, {}, track_length)
+                    logger.debug(f"Added virtual track {virtual_uri}")
+
+                logger.info(f"Processed CUE file {cue_path.name} with {len(cue_sheet.tracks)} tracks")
+
+            except Exception as error:
+                logger.warning(f"Failed processing CUE file {cue_path}: {error}")
+
+        logger.info("Done scanning CUE files")
 
 
 class _ScanProgress:

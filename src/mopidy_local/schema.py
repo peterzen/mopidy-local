@@ -162,7 +162,7 @@ _SEARCH_FIELDS = {
     "musicbrainz_artistid",
 }
 
-schema_version = 7
+schema_version = 8
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +372,11 @@ def insert_track(c, track, images=None):
                 str(track.musicbrainz_id) if track.musicbrainz_id else None
             ),
             "last_modified": track.last_modified,
+            "kind": getattr(track, "kind", "file"),
+            "source": getattr(track, "source", "fs"),
+            "path": getattr(track, "path", None),
+            "start_ms": getattr(track, "start_ms", None),
+            "end_ms": getattr(track, "end_ms", None),
         },
     )
     return track.uri
