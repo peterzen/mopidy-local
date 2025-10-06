@@ -97,6 +97,65 @@ The following configuration values are available:
   searching for external album art. These may contain UNIX shell
   patterns, i.e. `*`, `?`, etc
 
+## CUE Sheet Support
+
+Mopidy-Local supports CUE sheets for single-file albums. When you scan your
+media library, Mopidy will automatically detect `.cue` files and create virtual
+tracks for each track defined in the CUE sheet.
+
+### Features
+
+- **Automatic CUE detection**: During scanning, all `.cue` files are detected
+  and parsed automatically.
+- **Virtual tracks**: Each track in a CUE sheet becomes a separate track in
+  your library, just like individual audio files.
+- **Accurate seeking**: Playback uses Media Fragments URI to seek to the
+  correct position in the backing audio file.
+- **Full metadata**: Track titles, performers, dates, and genres from CUE
+  sheets are preserved in the library.
+
+### Supported CUE Format
+
+- **Single-file CUE sheets only**: The CUE sheet must reference a single audio
+  file (e.g., `FILE "album.flac" WAVE`).
+- **Seekable audio formats**: The backing audio file must be seekable (local
+  files on disk). FLAC, MP3, WAV, and other common formats are supported.
+
+### Example CUE Sheet
+
+```cue
+REM DATE 2020
+REM GENRE "Rock"
+PERFORMER "Artist Name"
+TITLE "Album Title"
+FILE "album.flac" WAVE
+  TRACK 01 AUDIO
+    TITLE "First Track"
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    TITLE "Second Track"
+    PERFORMER "Guest Artist"
+    INDEX 01 03:45:33
+```
+
+### How It Works
+
+1. Place your `.cue` file in the same directory as the audio file it references.
+2. Run `mopidy local scan` to index your library.
+3. Virtual tracks will be created in the database with URIs like
+   `local:track:cuesheet-<hash>-<track_number>`.
+4. Browse and search work normally - virtual tracks appear alongside regular
+   tracks.
+5. During playback, Mopidy automatically seeks to the correct position in the
+   backing file.
+
+### Limitations
+
+- Multi-file CUE sheets (referencing multiple audio files) are not supported.
+- Non-seekable sources (e.g., streaming URLs) are not supported.
+- Gapless playback between CUE tracks depends on the audio backend's
+  capabilities.
+
 # Usage
 
 ## Generating a library
