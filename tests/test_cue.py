@@ -114,7 +114,7 @@ FILE "album.flac" WAVE
         """Test resolving audio file path from CUE."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = pathlib.Path(tmpdir)
-            
+
             # Create CUE file
             cue_path = tmpdir_path / "album.cue"
             cue_content = """FILE "album.flac" WAVE
@@ -122,15 +122,15 @@ FILE "album.flac" WAVE
     INDEX 01 00:00:00
 """
             cue_path.write_text(cue_content)
-            
+
             # Create audio file
             audio_path = tmpdir_path / "album.flac"
             audio_path.write_bytes(b"fake audio data")
-            
+
             # Parse and resolve
             cue_sheet = cue.parse_cue_file(cue_path)
             resolved = cue.resolve_audio_file(cue_sheet)
-            
+
             assert resolved is not None
             assert resolved == audio_path
 
@@ -138,7 +138,7 @@ FILE "album.flac" WAVE
         """Test case-insensitive audio file resolution."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = pathlib.Path(tmpdir)
-            
+
             # Create CUE file with lowercase reference
             cue_path = tmpdir_path / "album.cue"
             cue_content = """FILE "album.flac" WAVE
@@ -146,14 +146,14 @@ FILE "album.flac" WAVE
     INDEX 01 00:00:00
 """
             cue_path.write_text(cue_content)
-            
+
             # Create audio file with uppercase name
             audio_path = tmpdir_path / "ALBUM.FLAC"
             audio_path.write_bytes(b"fake audio data")
-            
+
             # Parse and resolve
             cue_sheet = cue.parse_cue_file(cue_path)
             resolved = cue.resolve_audio_file(cue_sheet)
-            
+
             assert resolved is not None
             assert resolved.name.upper() == "ALBUM.FLAC"

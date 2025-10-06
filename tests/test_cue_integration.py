@@ -83,14 +83,14 @@ FILE "album.flac" WAVE
 
             # Create nested structure
             (tmpdir_path / "album1").mkdir()
-            (tmpdir_path / "album1" / "disc1.cue").write_text("PERFORMER \"Test\"")
+            (tmpdir_path / "album1" / "disc1.cue").write_text('PERFORMER "Test"')
 
             (tmpdir_path / "album2" / "subdir").mkdir(parents=True)
             (tmpdir_path / "album2" / "subdir" / "album.cue").write_text(
-                "PERFORMER \"Test\""
+                'PERFORMER "Test"'
             )
 
-            (tmpdir_path / "album3.cue").write_text("PERFORMER \"Test\"")
+            (tmpdir_path / "album3.cue").write_text('PERFORMER "Test"')
 
             # Find all CUE files
             cue_files = list(cue.find_cue_files(tmpdir_path))
