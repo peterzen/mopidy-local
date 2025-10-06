@@ -1,9 +1,11 @@
+import hashlib
 import logging
 import pathlib
 import time
 
 from mopidy import commands
 from mopidy.audio import scan, tags
+from mopidy.models import Album, Artist, Track
 
 from mopidy_local import cue, mtimes, storage, translator
 
@@ -277,10 +279,10 @@ class ScanCommand(commands.Command):
         progress.log()
         logger.info("Done scanning")
 
-    def _scan_cue_files(self, *, media_dir, library, file_mtimes):
+    def _scan_cue_files(  # noqa: PLR0915
+        self, *, media_dir, library, file_mtimes
+    ):
         """Scan CUE files and generate virtual tracks."""
-        from mopidy.models import Album, Artist, Track
-
         logger.info("Scanning for CUE files...")
         cue_files = list(cue.find_cue_files(media_dir))
         logger.info(f"Found {len(cue_files)} CUE files")
@@ -304,7 +306,8 @@ class ScanCommand(commands.Command):
                 scan_result = scanner.scan(audio_file.as_uri())
                 if not scan_result or not scan_result.duration:
                     logger.warning(
-                        f"Could not determine duration for {audio_file}, skipping CUE"
+                        f"Could not determine duration for {audio_file}, "
+                        "skipping CUE"
                     )
                     continue
 
@@ -317,7 +320,7 @@ class ScanCommand(commands.Command):
                         continue
 
                     start_ms = track_info.index.milliseconds
-                    
+
                     # Determine end time
                     if i + 1 < len(cue_sheet.tracks):
                         next_track = cue_sheet.tracks[i + 1]
@@ -333,11 +336,13 @@ class ScanCommand(commands.Command):
 
                     # Generate virtual track URI
                     # Using format: local:track:cuesheet-<hash>-<track_num>
-                    import hashlib
-                    cue_hash = hashlib.md5(
+                    cue_hash = hashlib.md5(  # noqa: S324
                         str(cue_path).encode()
                     ).hexdigest()[:8]
-                    virtual_uri = f"local:track:cuesheet-{cue_hash}-{track_info.number:02d}"
+                    track_num_str = f"{track_info.number:02d}"
+                    virtual_uri = (
+                        f"local:track:cuesheet-{cue_hash}-{track_num_str}"
+                    )
 
                     # Create artist
                     performer = (
@@ -345,7 +350,10 @@ class ScanCommand(commands.Command):
                         or cue_sheet.performer
                         or "Unknown Artist"
                     )
-                    artist_uri = f"local:artist:cue-{hashlib.md5(performer.encode()).hexdigest()[:8]}"
+                    perf_hash = hashlib.md5(  # noqa: S324
+                        performer.encode()
+                    ).hexdigest()[:8]
+                    artist_uri = f"local:artist:cue-{perf_hash}"
                     artists = [
                         Artist(uri=artist_uri, name=performer)
                     ]
@@ -362,7 +370,9 @@ class ScanCommand(commands.Command):
                     )
 
                     # Create track
-                    track_title = track_info.title or f"Track {track_info.number}"
+                    track_title = (
+                        track_info.title or f"Track {track_info.number}"
+                    )
                     virtual_track = Track(
                         uri=virtual_uri,
                         name=track_title,
@@ -386,7 +396,11 @@ class ScanCommand(commands.Command):
                     library.add(virtual_track, {}, track_length)
                     logger.debug(f"Added virtual track {virtual_uri}")
 
-                logger.info(f"Processed CUE file {cue_path.name} with {len(cue_sheet.tracks)} tracks")
+                num_tracks = len(cue_sheet.tracks)
+                logger.info(
+                    f"Processed CUE file {cue_path.name} "
+                    f"with {num_tracks} tracks"
+                )
 
             except Exception as error:
                 logger.warning(f"Failed processing CUE file {cue_path}: {error}")

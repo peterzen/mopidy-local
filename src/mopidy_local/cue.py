@@ -84,13 +84,13 @@ def parse_cue_file(cue_path: Path) -> CueSheet | None:
         return None
 
 
-def _parse_cue_content(cue_path: Path, content: str) -> CueSheet:
+def _parse_cue_content(cue_path: Path, content: str) -> CueSheet:  # noqa: PLR0915, PLR0912, C901
     """Parse CUE file content."""
     cue = CueSheet(file_path=cue_path)
     current_track: CueTrack | None = None
 
-    for line in content.splitlines():
-        line = line.strip()
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
         if not line:
             continue
 
