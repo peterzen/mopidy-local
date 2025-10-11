@@ -13,7 +13,13 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
 dynamic = ["version"]
-dependencies = ["mopidy >= 4.0.0a3", "pykka >= 4", "uritools >= 4"]
+dependencies = [
+    "mopidy >= 3, < 4",
+    "pycairo >= 1.26.0",
+    "PyGObject >= 3.48.2",
+    "pykka >= 4",
+    "uritools >= 4",
+]
 
 [project.urls]
 Homepage = "https://github.com/mopidy/mopidy-local"
