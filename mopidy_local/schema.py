@@ -165,7 +165,7 @@ _SEARCH_FIELDS = {
     "musicbrainz_artistid",
 }
 
-schema_version = 7
+schema_version = 8
 
 logger = logging.getLogger(__name__)
 
@@ -348,28 +348,40 @@ def insert_album(c, album, images=None):
     return album.uri
 
 
-def insert_track(c, track, images=None):
-    _insert(
-        c,
-        "track",
-        {
-            "uri": track.uri,
-            "name": track.name,
-            "album": insert_album(c, track.album, images),
-            "artists": insert_artists(c, track.artists),
-            "composers": insert_artists(c, track.composers),
-            "performers": insert_artists(c, track.performers),
-            "genre": track.genre,
-            "track_no": track.track_no,
-            "disc_no": track.disc_no,
-            "date": track.date,
-            "length": track.length,
-            "bitrate": track.bitrate,
-            "comment": track.comment,
-            "musicbrainz_id": track.musicbrainz_id,
-            "last_modified": track.last_modified,
-        },
-    )
+def insert_track(c, track, images=None, cue_info=None):
+    params = {
+        "uri": track.uri,
+        "name": track.name,
+        "album": insert_album(c, track.album, images),
+        "artists": insert_artists(c, track.artists),
+        "composers": insert_artists(c, track.composers),
+        "performers": insert_artists(c, track.performers),
+        "genre": track.genre,
+        "track_no": track.track_no,
+        "disc_no": track.disc_no,
+        "date": track.date,
+        "length": track.length,
+        "bitrate": track.bitrate,
+        "comment": track.comment,
+        "musicbrainz_id": track.musicbrainz_id,
+        "last_modified": track.last_modified,
+    }
+    
+    # Add CUE-specific fields if provided
+    if cue_info:
+        params["kind"] = "virtual"
+        params["source"] = "cue"
+        params["backing_file"] = cue_info.get("backing_file")
+        params["start_ms"] = cue_info.get("start_ms")
+        params["end_ms"] = cue_info.get("end_ms")
+    else:
+        params["kind"] = "file"
+        params["source"] = "fs"
+        params["backing_file"] = None
+        params["start_ms"] = None
+        params["end_ms"] = None
+    
+    _insert(c, "track", params)
     return track.uri
 
 
