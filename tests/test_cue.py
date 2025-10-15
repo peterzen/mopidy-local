@@ -157,3 +157,54 @@ FILE "album.flac" WAVE
 
             assert resolved is not None
             assert resolved.name.upper() == "ALBUM.FLAC"
+
+    def test_virtual_track_wrapper_immutability(self):
+        """Test that VirtualTrack wrapper works with immutable Track objects."""
+        # This test verifies the fix for the immutability bug
+        import sys
+        sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "src"))
+        
+        from mopidy.models import Album, Artist, Track
+        from mopidy_local.commands import VirtualTrack
+        
+        # Create a Track (immutable)
+        artist = Artist(uri="local:artist:test", name="Test Artist")
+        album = Album(
+            uri="local:album:test",
+            name="Test Album",
+            artists=frozenset([artist]),
+            num_tracks=3,
+            date="1960",
+        )
+        track = Track(
+            uri="local:track:test",
+            name="Test Track",
+            artists=frozenset([artist]),
+            album=album,
+            track_no=1,
+            length=180000,
+        )
+        
+        # Wrap with VirtualTrack - this should not raise
+        virtual_track = VirtualTrack(
+            track=track,
+            kind="virtual",
+            source="cue",
+            path="/path/to/file.flac",
+            start_ms=0,
+            end_ms=180000,
+        )
+        
+        # Verify wrapper attributes
+        assert virtual_track.kind == "virtual"
+        assert virtual_track.source == "cue"
+        assert virtual_track.path == "/path/to/file.flac"
+        assert virtual_track.start_ms == 0
+        assert virtual_track.end_ms == 180000
+        
+        # Verify delegated attributes
+        assert virtual_track.uri == "local:track:test"
+        assert virtual_track.name == "Test Track"
+        assert virtual_track.album.name == "Test Album"
+        assert virtual_track.album.date == "1960"
+

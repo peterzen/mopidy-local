@@ -14,6 +14,22 @@ logger = logging.getLogger(__name__)
 MIN_DURATION_MS = 100  # Shortest length of track to include.
 
 
+class VirtualTrack:
+    """Wrapper for Track with additional virtual track metadata."""
+
+    def __init__(self, track, kind, source, path, start_ms, end_ms):
+        self._track = track
+        self.kind = kind
+        self.source = source
+        self.path = path
+        self.start_ms = start_ms
+        self.end_ms = end_ms
+
+    def __getattr__(self, name):
+        """Delegate attribute access to the wrapped track."""
+        return getattr(self._track, name)
+
+
 class LocalCommand(commands.Command):
     def __init__(self):
         super().__init__()
@@ -386,15 +402,18 @@ class ScanCommand(commands.Command):
                         last_modified=mtime,
                     )
 
-                    # Add custom attributes for virtual track
-                    virtual_track.kind = "virtual"
-                    virtual_track.source = "cue"
-                    virtual_track.path = str(audio_file)
-                    virtual_track.start_ms = start_ms
-                    virtual_track.end_ms = end_ms
+                    # Wrap track with virtual track metadata
+                    wrapped_track = VirtualTrack(
+                        track=virtual_track,
+                        kind="virtual",
+                        source="cue",
+                        path=str(audio_file),
+                        start_ms=start_ms,
+                        end_ms=end_ms,
+                    )
 
                     # Add to library
-                    library.add(virtual_track, {}, track_length)
+                    library.add(wrapped_track, {}, track_length)
                     logger.debug(f"Added virtual track {virtual_uri}")
 
                 num_tracks = len(cue_sheet.tracks)
