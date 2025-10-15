@@ -196,7 +196,46 @@ def load(c):
         new_version = c.execute("PRAGMA user_version").fetchone()[0]
         assert new_version != user_version
         user_version = new_version
+    _ensure_virtual_track_schema(c)
     return user_version
+
+
+def _ensure_virtual_track_schema(c):
+    """Ensure legacy databases have the expected virtual track columns."""
+    columns = {
+        row["name"] for row in c.execute("PRAGMA table_info(track)")
+    }
+    if "backing_file" in columns:
+        return
+    if "path" in columns:
+        logger.info(
+            "Renaming legacy 'track.path' column to 'track.backing_file'"
+        )
+        script = """
+BEGIN IMMEDIATE TRANSACTION;
+ALTER TABLE track RENAME COLUMN path TO backing_file;
+DROP INDEX IF EXISTS idx_track_path;
+CREATE INDEX IF NOT EXISTS track_backing_file_index
+    ON track (backing_file);
+COMMIT;
+"""
+        try:
+            c.executescript(script)
+        except sqlite3.OperationalError as exc:
+            logger.warning(
+                "Failed to upgrade legacy virtual track column: %s", exc
+            )
+            try:
+                c.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+        return
+    logger.warning(
+        (
+            "Track table is missing the 'backing_file' column; "
+            "virtual track support may not function correctly."
+        )
+    )
 
 
 def tracks(c):

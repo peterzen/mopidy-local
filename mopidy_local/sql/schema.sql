@@ -39,11 +39,11 @@ CREATE TABLE track (
     comment         TEXT,               -- track comment
     musicbrainz_id  TEXT,               -- MusicBrainz ID
     last_modified   INTEGER,            -- Represents last modification time
-    kind            TEXT DEFAULT 'file',-- track kind: 'file' or 'virtual'
-    source          TEXT DEFAULT 'fs',  -- track source: 'fs' or 'cue'
-    backing_file    TEXT,               -- backing audio file for virtual tracks
-    start_ms        INTEGER,            -- start position for virtual tracks
-    end_ms          INTEGER,            -- end position for virtual tracks
+    kind            TEXT NOT NULL DEFAULT 'file', -- physical vs virtual track
+    source          TEXT NOT NULL DEFAULT 'fs',   -- origin of the track data
+    backing_file    TEXT,               -- media file backing a virtual track
+    start_ms        INTEGER,            -- virtual track start offset
+    end_ms          INTEGER,            -- virtual track end offset
     FOREIGN KEY (album) REFERENCES album (uri),
     FOREIGN KEY (artists) REFERENCES artist (uri),
     FOREIGN KEY (composers) REFERENCES artist (uri),

@@ -205,7 +205,12 @@ class LocalStorageProvider:
 
     def _extract_images(self, uri, tags):
         images = set()  # filter duplicate images, e.g. embedded/external
-        for image in tags.get("image", []) + tags.get("preview-image", []):
+        tag_sources = []
+        if tags:
+            tag_sources = tags.get("image", []) + tags.get(
+                "preview-image", []
+            )
+        for image in tag_sources:
             try:
                 # FIXME: gst.Buffer or plain str/bytes type?
                 data = getattr(image, "data", image)
