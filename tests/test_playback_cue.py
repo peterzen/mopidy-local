@@ -44,28 +44,14 @@ class PlaybackProviderTest(unittest.TestCase):
         schema.insert_track(self.conn, track, cue_info=None)
         self.conn.commit()
         
-        # Create mock backend
-        backend = mock.Mock()
-        backend.config = {
-            "local": {
-                "media_dir": str(self.media_dir),
-            }
-        }
+        backend = self._mock_backend()
+        provider = playback.LocalPlaybackProvider(mock.Mock(), backend)
         
-        # Mock Extension class and its get_data_dir method
-        from mopidy_local import Extension
-        with mock.patch.object(Extension, 'get_data_dir', return_value=self.data_dir):
-            # Create playback provider
-            provider = playback.LocalPlaybackProvider(mock.Mock(), backend)
-            provider.backend = backend
-            
-            # Translate URI
-            file_uri = provider.translate_uri("local:track:song.mp3")
-            
-            # Should be a normal file URI without time fragment
-            self.assertIsNotNone(file_uri)
-            self.assertTrue(file_uri.startswith("file://"))
-            self.assertNotIn("#t=", file_uri)
+        file_uri = provider.translate_uri("local:track:song.mp3")
+        
+        self.assertIsNotNone(file_uri)
+        self.assertTrue(file_uri.startswith("file://"))
+        self.assertNotIn("#t=", file_uri)
         
     def test_translate_uri_virtual_track(self):
         """Test URI translation for virtual tracks from CUE sheets."""
@@ -96,32 +82,14 @@ class PlaybackProviderTest(unittest.TestCase):
         schema.insert_track(self.conn, track, cue_info=cue_info)
         self.conn.commit()
         
-        # Create mock backend
-        backend = mock.Mock()
-        backend.config = {
-            "local": {
-                "media_dir": str(self.media_dir),
-            }
-        }
+        backend = self._mock_backend()
+        provider = playback.LocalPlaybackProvider(mock.Mock(), backend)
         
-        # Mock Extension class and its get_data_dir method
-        from mopidy_local import Extension
-        with mock.patch.object(Extension, 'get_data_dir', return_value=self.data_dir):
-            # Create playback provider
-            provider = playback.LocalPlaybackProvider(mock.Mock(), backend)
-            provider.backend = backend
-            
-            # Translate URI
-            file_uri = provider.translate_uri("local:track:album.cue#track1")
-            
-            # Should have time fragment
-            self.assertIsNotNone(file_uri)
-            self.assertTrue(file_uri.startswith("file://"))
-            self.assertIn("#t=", file_uri)
-            
-            # Check time fragment
-            # start_ms=0 -> 0.0 seconds, end_ms=180000 -> 180.0 seconds
-            self.assertIn("#t=0.0,180.0", file_uri)
+        file_uri = provider.translate_uri("local:track:album.cue#track1")
+        
+        self.assertIsNotNone(file_uri)
+        self.assertTrue(file_uri.startswith("file://"))
+        self.assertIn("#t=0.000,180.000", file_uri)
         
     def test_translate_uri_virtual_track_mid_album(self):
         """Test URI translation for virtual track in middle of album."""
@@ -152,33 +120,32 @@ class PlaybackProviderTest(unittest.TestCase):
         schema.insert_track(self.conn, track, cue_info=cue_info)
         self.conn.commit()
         
-        # Create mock backend
-        backend = mock.Mock()
-        backend.config = {
-            "local": {
-                "media_dir": str(self.media_dir),
-            }
-        }
+        backend = self._mock_backend()
+        provider = playback.LocalPlaybackProvider(mock.Mock(), backend)
         
-        # Mock Extension class and its get_data_dir method
-        from mopidy_local import Extension
-        with mock.patch.object(Extension, 'get_data_dir', return_value=self.data_dir):
-            # Create playback provider
-            provider = playback.LocalPlaybackProvider(mock.Mock(), backend)
-            provider.backend = backend
-            
-            # Translate URI
-            file_uri = provider.translate_uri("local:track:album.cue#track2")
-            
-            # Should have correct time fragment
-            self.assertIsNotNone(file_uri)
-            self.assertIn("#t=210.0,360.0", file_uri)
+        file_uri = provider.translate_uri("local:track:album.cue#track2")
+        
+        self.assertIsNotNone(file_uri)
+        self.assertIn("#t=210.000,360.000", file_uri)
         
     def tearDown(self):
         """Clean up test fixtures."""
         import shutil
         self.conn.close()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _mock_backend(self):
+        backend = mock.Mock()
+        backend.config = {
+            "local": {
+                "media_dir": str(self.media_dir),
+            }
+        }
+
+        library = mock.Mock()
+        library._connect.return_value = self.conn
+        backend.library = library
+        return backend
 
 
 if __name__ == "__main__":
