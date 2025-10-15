@@ -162,12 +162,13 @@ def _parse_cue_content(cue_path: Path, content: str) -> CueSheet:  # noqa: PLR09
     return cue
 
 
-def find_cue_files(directory: Path) -> Iterator[Path]:
+def find_cue_files(directory: Path, *, follow_symlinks: bool = False) -> Iterator[Path]:
     """
     Find all .cue files in a directory.
 
     Args:
         directory: Directory to search
+        follow_symlinks: Whether to follow symbolic links
 
     Yields:
         Path objects for .cue files
@@ -177,6 +178,9 @@ def find_cue_files(directory: Path) -> Iterator[Path]:
 
     for cue_file in directory.glob("**/*.cue"):
         if cue_file.is_file():
+            # Check if it's a symlink and whether we should follow it
+            if cue_file.is_symlink() and not follow_symlinks:
+                continue
             yield cue_file
 
 

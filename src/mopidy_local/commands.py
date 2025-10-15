@@ -109,6 +109,7 @@ class ScanCommand(commands.Command):
             media_dir=media_dir,
             library=library,
             file_mtimes=file_mtimes,
+            follow_symlinks=config["local"]["scan_follow_symlinks"],
         )
 
         library.close()
@@ -280,11 +281,11 @@ class ScanCommand(commands.Command):
         logger.info("Done scanning")
 
     def _scan_cue_files(  # noqa: PLR0915
-        self, *, media_dir, library, file_mtimes
+        self, *, media_dir, library, file_mtimes, follow_symlinks
     ):
         """Scan CUE files and generate virtual tracks."""
         logger.info("Scanning for CUE files...")
-        cue_files = list(cue.find_cue_files(media_dir))
+        cue_files = list(cue.find_cue_files(media_dir, follow_symlinks=follow_symlinks))
         logger.info(f"Found {len(cue_files)} CUE files")
 
         for cue_path in cue_files:

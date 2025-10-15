@@ -99,3 +99,29 @@ FILE "album.flac" WAVE
             # Check that we found all of them
             cue_names = {f.name for f in cue_files}
             assert cue_names == {"disc1.cue", "album.cue", "album3.cue"}
+
+    def test_find_cue_files_with_symlinks(self):
+        """Test finding CUE files respects follow_symlinks parameter."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = pathlib.Path(tmpdir)
+
+            # Create a real CUE file
+            real_dir = tmpdir_path / "real"
+            real_dir.mkdir()
+            real_cue = real_dir / "real.cue"
+            real_cue.write_text('PERFORMER "Real"')
+
+            # Create a symlinked CUE file
+            symlink_cue = tmpdir_path / "symlink.cue"
+            symlink_cue.symlink_to(real_cue)
+
+            # Without following symlinks, should only find the real file
+            cue_files = list(cue.find_cue_files(tmpdir_path, follow_symlinks=False))
+            assert len(cue_files) == 1
+            assert cue_files[0].name == "real.cue"
+
+            # With following symlinks, should find both
+            cue_files = list(cue.find_cue_files(tmpdir_path, follow_symlinks=True))
+            assert len(cue_files) == 2
+            cue_names = {f.name for f in cue_files}
+            assert cue_names == {"real.cue", "symlink.cue"}
