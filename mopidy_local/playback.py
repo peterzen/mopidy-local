@@ -1,4 +1,5 @@
 import logging
+import pathlib
 
 from mopidy import backend
 
@@ -12,10 +13,15 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         """Translate local URI to file URI, adding time fragment for virtual tracks."""
         # First check if this is a virtual track
         try:
-            from mopidy_local import storage
+            from mopidy_local import Extension
             config = self.backend.config
-            storage_provider = storage.LocalStorageProvider(config)
-            connection = storage_provider._connect()
+            
+            # Get database path
+            data_dir = Extension.get_data_dir(config)
+            dbpath = data_dir / "library.db"
+            
+            # Connect to database
+            connection = schema.Connection(str(dbpath))
             
             # Query to get track info including virtual track fields
             cursor = connection.execute(
@@ -27,13 +33,13 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
                 (uri,)
             )
             row = cursor.fetchone()
+            connection.close()
             
             if row and row[0] == 'virtual':
                 # This is a virtual track from a CUE sheet
                 kind, backing_file, start_ms, end_ms = row
                 
                 # Get the media directory
-                import pathlib
                 media_dir = pathlib.Path(config["local"]["media_dir"])
                 
                 # Construct the file URI for the backing file
