@@ -31,15 +31,15 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
     def _translate_virtual_track(self, uri: str) -> Optional[str]:
         """Return a playback URI for a virtual track or ``None`` if not virtual."""
         try:
-            connection = self.backend.library._connect()  # noqa: SLF001
-            row = connection.execute(
-                """
-                SELECT kind, backing_file, start_ms, end_ms
-                  FROM track
-                 WHERE uri = ?
-                """,
-                (uri,),
-            ).fetchone()
+            with self.backend.library._connect() as connection:  # noqa: SLF001
+                row = connection.execute(
+                    """
+                    SELECT kind, backing_file, start_ms, end_ms
+                      FROM track
+                     WHERE uri = ?
+                    """,
+                    (uri,),
+                ).fetchone()
         except Exception as exc:
             logger.warning("Error looking up virtual track %s: %s", uri, exc)
             return None
