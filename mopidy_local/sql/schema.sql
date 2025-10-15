@@ -2,7 +2,7 @@
 
 BEGIN EXCLUSIVE TRANSACTION;
 
-PRAGMA user_version = 7;                -- schema version
+PRAGMA user_version = 8;                -- schema version
 
 CREATE TABLE artist (
     uri             TEXT PRIMARY KEY,   -- artist URI
@@ -39,6 +39,11 @@ CREATE TABLE track (
     comment         TEXT,               -- track comment
     musicbrainz_id  TEXT,               -- MusicBrainz ID
     last_modified   INTEGER,            -- Represents last modification time
+    kind            TEXT NOT NULL DEFAULT 'file', -- physical vs virtual track
+    source          TEXT NOT NULL DEFAULT 'fs',   -- origin of the track data
+    backing_file    TEXT,               -- media file backing a virtual track
+    start_ms        INTEGER,            -- virtual track start offset
+    end_ms          INTEGER,            -- virtual track end offset
     FOREIGN KEY (album) REFERENCES album (uri),
     FOREIGN KEY (artists) REFERENCES artist (uri),
     FOREIGN KEY (composers) REFERENCES artist (uri),
@@ -63,6 +68,9 @@ CREATE INDEX track_last_modified_index   ON track (last_modified);
 CREATE INDEX album_musicbrainz_id_index  ON album (musicbrainz_id);
 CREATE INDEX artist_musicbrainz_id_index ON artist (musicbrainz_id);
 CREATE INDEX track_musicbrainz_id_index  ON track (musicbrainz_id);
+CREATE INDEX track_kind_index            ON track (kind);
+CREATE INDEX track_source_index          ON track (source);
+CREATE INDEX track_backing_file_index    ON track (backing_file);
 
 -- Convenience views
 

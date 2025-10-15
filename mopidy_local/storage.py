@@ -97,7 +97,7 @@ class LocalStorageProvider:
     def begin(self):
         return schema.tracks(self._connect())
 
-    def add(self, track, tags=None, duration=None):
+    def add(self, track, tags=None, duration=None, cue_info=None):
         logger.debug("Adding track: %s", track)
         images = None
         if track.album and track.album.name:  # FIXME: album required
@@ -109,7 +109,7 @@ class LocalStorageProvider:
                 logger.warning("Error extracting images for %s: %s", uri, e)
         try:
             track = self._validate_track(track)
-            schema.insert_track(self._connect(), track, images)
+            schema.insert_track(self._connect(), track, images, cue_info)
         except Exception as e:
             logger.warning("Skipped %s: %s", track.uri, e)
 
@@ -203,7 +203,12 @@ class LocalStorageProvider:
 
     def _extract_images(self, uri, tags):
         images = set()  # filter duplicate images, e.g. embedded/external
-        for image in tags.get("image", []) + tags.get("preview-image", []):
+        tag_sources = []
+        if tags:
+            tag_sources = tags.get("image", []) + tags.get(
+                "preview-image", []
+            )
+        for image in tag_sources:
             try:
                 # FIXME: gst.Buffer or plain str/bytes type?
                 data = getattr(image, "data", image)
