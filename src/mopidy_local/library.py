@@ -57,6 +57,10 @@ class LocalLibraryProvider(backend.LibraryProvider):
                 return list(schema.lookup(self._connect(), RefType.ARTIST, uri))
             if uri.startswith("local:track"):
                 return list(schema.lookup(self._connect(), RefType.TRACK, uri))
+            if uri.startswith("local:directory"):
+                # Directories are not directly playable, return empty list
+                # Use browse() to navigate directory contents
+                return []
             msg = "Invalid lookup URI"
             raise ValueError(msg)  # noqa: TRY301
         except Exception as e:
