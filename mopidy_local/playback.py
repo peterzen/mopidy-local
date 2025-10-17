@@ -118,18 +118,6 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._current_virtual_track_end_ms = end_ms
         self._seek_pending = True
 
-        # Compose a time fragment for compatibility and existing tests
-        start_fragment = None if start_ms is None else f"{start_ms / 1000:.3f}"
-        end_fragment = None if end_ms is None else f"{end_ms / 1000:.3f}"
-        if start_fragment is None and end_fragment is None:
-            playback_uri = file_uri
-        elif end_fragment is None:
-            playback_uri = f"{file_uri}#t={start_fragment}"
-        elif start_fragment is None:
-            playback_uri = f"{file_uri}#t=0.000,{end_fragment}"
-        else:
-            playback_uri = f"{file_uri}#t={start_fragment},{end_fragment}"
-
         logger.info(
             "Virtual track %s: file=%s, start=%sms, end=%sms",
             uri,
@@ -138,16 +126,17 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             end_ms,
         )
 
-        # Return file URI with time fragment; still perform explicit seek/EOS monitor
-        return playback_uri
+        # Return plain file URI without time fragment
+        # We'll handle seeking manually in the timer to avoid race conditions
+        return file_uri
 
     def _start_monitor_timer(self):
         """Start monitoring playback position for virtual track boundaries."""
         if GLib is None or self._current_virtual_track_end_ms is None:
             return
 
-        # Check every 500ms for more responsive track changes
-        self._monitor_timer_id = GLib.timeout_add(500, self._check_playback_position)
+        # Start with fast interval (50ms) for immediate seek, then slow down
+        self._monitor_timer_id = GLib.timeout_add(50, self._check_playback_position)
         logger.debug(
             "Started position monitor for virtual track (end=%dms)",
             self._current_virtual_track_end_ms,
@@ -163,20 +152,21 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
     def _check_playback_position(self):
         """Check if playback has reached the virtual track boundary."""
         try:
-            # Perform pending seek if needed
+            # Perform pending seek if needed (only once when playback is ready)
             if self._seek_pending:
-                self._perform_virtual_track_seek()
-            
-            # Trigger fade-in once playback is rolling
-            if (
-                not self._fade_active
-                and self._fade_in_ms > 0
-                and self._current_virtual_track_start_ms is not None
-            ):
-                # We consider playback "started" as soon as we can query a position
+                # Get current position to check if playback has started
                 position_ms = self.audio.get_position().get()
                 if position_ms is not None:
-                    self._start_volume_fade()
+                    # Playback is ready, perform the seek
+                    self._perform_virtual_track_seek()
+                    # After successful seek, switch to slower monitoring interval
+                    if not self._seek_pending:  # seek completed
+                        self._stop_monitor_timer()
+                        # Restart with slower interval for boundary monitoring
+                        self._monitor_timer_id = GLib.timeout_add(500, self._check_playback_position)
+                        logger.debug("Switched to 500ms monitoring interval after seek")
+                # Continue fast polling until seek completes
+                return True
             
             # Get current position from audio
             position_ms = self.audio.get_position().get()
@@ -184,6 +174,14 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             if position_ms is None:
                 # Playback hasn't started yet or is stopped
                 return True  # Continue monitoring
+            
+            # Trigger fade-in once playback is rolling
+            if (
+                not self._fade_active
+                and self._fade_in_ms > 0
+                and self._current_virtual_track_start_ms is not None
+            ):
+                self._start_volume_fade()
 
             if self._current_virtual_track_end_ms is None:
                 # No virtual track active, stop monitoring
