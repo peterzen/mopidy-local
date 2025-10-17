@@ -22,6 +22,19 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._current_virtual_track_end_ms = None
         self._current_virtual_track_start_ms = None
         self._seek_pending = False
+        # Fade-in configuration/state
+        self._fade_in_ms = int(
+            backend.config.get("local", {}).get("fade_in_ms", 0) or 0
+        )
+        self._fade_timer_id = None
+        self._fade_steps_total = 0
+        self._fade_step_index = 0
+        self._fade_target_volume = None
+        self._fade_active = False
+        # Detect if audio exposes volume control; used for proper ramping.
+        self._can_fade_via_volume = hasattr(self.audio, "set_volume") and hasattr(
+            self.audio, "get_volume"
+        )
 
     def translate_uri(self, uri):
         """Translate local URI to file URI, adding time fragment for virtual tracks."""
@@ -38,12 +51,16 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             logger.info("Using virtual-track translation: %s → %s", uri, fragment_uri)
             # Start monitoring for virtual tracks (this will also handle the seek)
             self._start_monitor_timer()
+            # Reset any prior fade state for a clean start
+            self._cancel_fade_timer()
             return fragment_uri
 
         # Clear virtual track state for regular tracks
         self._current_virtual_track_start_ms = None
         self._current_virtual_track_end_ms = None
         self._seek_pending = False
+        # No monitoring for regular tracks; ensure fade timers are clean.
+        self._cancel_fade_timer()
         fallback_uri = translator.local_uri_to_file_uri(
             uri, self.backend.config["local"]["media_dir"]
         )
@@ -100,7 +117,19 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._current_virtual_track_start_ms = start_ms if start_ms is not None else 0
         self._current_virtual_track_end_ms = end_ms
         self._seek_pending = True
-        
+
+        # Compose a time fragment for compatibility and existing tests
+        start_fragment = None if start_ms is None else f"{start_ms / 1000:.3f}"
+        end_fragment = None if end_ms is None else f"{end_ms / 1000:.3f}"
+        if start_fragment is None and end_fragment is None:
+            playback_uri = file_uri
+        elif end_fragment is None:
+            playback_uri = f"{file_uri}#t={start_fragment}"
+        elif start_fragment is None:
+            playback_uri = f"{file_uri}#t=0.000,{end_fragment}"
+        else:
+            playback_uri = f"{file_uri}#t={start_fragment},{end_fragment}"
+
         logger.info(
             "Virtual track %s: file=%s, start=%sms, end=%sms",
             uri,
@@ -108,9 +137,9 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             start_ms,
             end_ms,
         )
-        
-        # Return plain file URI - we'll seek manually
-        return file_uri
+
+        # Return file URI with time fragment; still perform explicit seek/EOS monitor
+        return playback_uri
 
     def _start_monitor_timer(self):
         """Start monitoring playback position for virtual track boundaries."""
@@ -137,6 +166,17 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             # Perform pending seek if needed
             if self._seek_pending:
                 self._perform_virtual_track_seek()
+            
+            # Trigger fade-in once playback is rolling
+            if (
+                not self._fade_active
+                and self._fade_in_ms > 0
+                and self._current_virtual_track_start_ms is not None
+            ):
+                # We consider playback "started" as soon as we can query a position
+                position_ms = self.audio.get_position().get()
+                if position_ms is not None:
+                    self._start_volume_fade()
             
             # Get current position from audio
             position_ms = self.audio.get_position().get()
@@ -186,12 +226,24 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
                 self._current_virtual_track_start_ms,
             )
             # Seek to the start position
-            success = self.audio.set_position(self._current_virtual_track_start_ms).get()
+            # If we cannot perform a proper volume ramp, preroll slightly before the
+            # intended start to reduce transients at segment boundaries.
+            seek_start = self._current_virtual_track_start_ms
+            if self._fade_in_ms > 0 and not self._can_fade_via_volume:
+                preroll = min(self._fade_in_ms, seek_start)
+                if preroll:
+                    logger.debug(
+                        "Applying preroll of %dms before start to reduce transients",
+                        preroll,
+                    )
+                    seek_start -= preroll
+
+            success = self.audio.set_position(seek_start).get()
             if success:
-                logger.debug("Seek to %dms successful", self._current_virtual_track_start_ms)
+                logger.debug("Seek to %dms successful", seek_start)
                 self._seek_pending = False
             else:
-                logger.warning("Seek to %dms failed", self._current_virtual_track_start_ms)
+                logger.warning("Seek to %dms failed", seek_start)
                 # Don't clear _seek_pending, will try again next timer tick
         except Exception as exc:
             logger.warning("Error seeking to virtual track start: %s", exc)
@@ -203,3 +255,90 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._current_virtual_track_end_ms = None
         self._current_virtual_track_start_ms = None
         self._seek_pending = False
+        self._cancel_fade_timer()
+
+    # --- Fade-in helpers -------------------------------------------------
+
+    def _cancel_fade_timer(self):
+        if self._fade_timer_id is not None and GLib is not None:
+            GLib.source_remove(self._fade_timer_id)
+        self._fade_timer_id = None
+        self._fade_active = False
+        self._fade_steps_total = 0
+        self._fade_step_index = 0
+        self._fade_target_volume = None
+
+    def _start_volume_fade(self):
+        """Attempt to ramp volume from 0 to current value over fade_in_ms.
+
+        If audio volume control is not available, this is a no-op.
+        """
+        if GLib is None or self._fade_in_ms <= 0 or self._fade_active:
+            return
+
+        if not self._can_fade_via_volume:
+            # Nothing to do; preroll seek handled in _perform_virtual_track_seek.
+            return
+
+        try:
+            # Determine current target volume; fall back to 100 if unavailable.
+            target = 100
+            try:
+                current = self.audio.get_volume().get()
+                if isinstance(current, int) and 0 <= current <= 100:
+                    target = current
+            except Exception:  # noqa: BLE001
+                pass
+
+            # Start from 0, then ramp to target.
+            try:
+                self.audio.set_volume(0)
+            except Exception:  # noqa: BLE001
+                logger.debug("Audio.set_volume not available; skipping fade ramp")
+                return
+
+            # Configure timer/steps
+            steps = max(4, min(20, int(self._fade_in_ms / 5)))
+            interval = max(5, int(self._fade_in_ms / steps))
+
+            self._fade_active = True
+            self._fade_steps_total = steps
+            self._fade_step_index = 0
+            self._fade_target_volume = target
+
+            logger.debug(
+                "Starting volume fade-in: target=%d, steps=%d, interval=%dms",
+                target,
+                steps,
+                interval,
+            )
+
+            # Schedule first step
+            self._fade_timer_id = GLib.timeout_add(interval, self._fade_step)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Unable to start fade-in: %s", exc)
+
+    def _fade_step(self):
+        """Timer callback to perform one fade step. Returns True to continue."""
+        try:
+            if not self._fade_active:
+                return False
+
+            self._fade_step_index += 1
+            if self._fade_step_index >= self._fade_steps_total:
+                # Final step; set to target and stop timer
+                try:
+                    self.audio.set_volume(int(self._fade_target_volume))
+                finally:
+                    self._cancel_fade_timer()
+                return False
+
+            # Intermediate step
+            fraction = self._fade_step_index / float(self._fade_steps_total)
+            new_vol = int(round(self._fade_target_volume * fraction))
+            self.audio.set_volume(new_vol)
+            return True
+        except Exception:  # noqa: BLE001
+            # On any error, stop trying to fade
+            self._cancel_fade_timer()
+            return False

@@ -34,6 +34,9 @@ class Extension(ext.Extension):
         schema["timeout"] = config.Integer(optional=True, minimum=1)
         schema["use_artist_sortname"] = config.Boolean()
         schema["album_art_files"] = config.List(optional=True)
+        # Optional fade-in (milliseconds) for virtual-track playback.
+        # Defaults provided in ext.conf; 0 disables the behavior.
+        schema["fade_in_ms"] = config.Integer(optional=True, minimum=0)
         return schema
 
     def setup(self, registry):

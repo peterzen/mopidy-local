@@ -120,6 +120,12 @@ The following configuration values are available:
   for external album art. These may contain UNIX shell patterns,
   i.e. ``*``, ``?``, etc.
 
+- ``local/fade_in_ms``: Optional fade-in, in milliseconds, applied when
+  starting playback of a virtual track (e.g., from a CUE sheet). If Mopidy's
+  audio layer supports volume control, a short ramp from 0 to the current
+  volume is applied; otherwise the seek starts a few milliseconds early to
+  reduce harsh transients. Set to ``0`` to disable. Default: ``10``.
+
 
 CUE Sheet Support
 =================
