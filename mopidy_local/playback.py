@@ -20,6 +20,8 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         super().__init__(audio, backend)
         self._monitor_timer_id = None
         self._current_virtual_track_end_ms = None
+        self._current_virtual_track_start_ms = None
+        self._seek_pending = False
 
     def translate_uri(self, uri):
         """Translate local URI to file URI, adding time fragment for virtual tracks."""
@@ -33,13 +35,15 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
 
         fragment_uri = self._translate_virtual_track(uri)
         if fragment_uri:
-            logger.debug("Using virtual-track translation for %s", uri)
-            # Start monitoring for virtual tracks
+            logger.info("Using virtual-track translation: %s → %s", uri, fragment_uri)
+            # Start monitoring for virtual tracks (this will also handle the seek)
             self._start_monitor_timer()
             return fragment_uri
 
         # Clear virtual track state for regular tracks
+        self._current_virtual_track_start_ms = None
         self._current_virtual_track_end_ms = None
+        self._seek_pending = False
         fallback_uri = translator.local_uri_to_file_uri(
             uri, self.backend.config["local"]["media_dir"]
         )
@@ -92,43 +96,21 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             )
             return None
 
-        # GStreamer media fragments expect seconds.
-        if start_ms is None:
-            start_fragment = None
-        else:
-            start_fragment = f"{start_ms / 1000:.3f}"
-
-        if end_ms is None:
-            end_fragment = None
-        else:
-            end_fragment = f"{end_ms / 1000:.3f}"
-
-        if start_fragment is None and end_fragment is None:
-            logger.warning(
-                "Virtual track %s missing start/end markers", uri
-            )
-            return file_uri
-
-        if end_fragment is None:
-            fragment = f"#t={start_fragment}"
-        elif start_fragment is None:
-            fragment = f"#t=0.000,{end_fragment}"
-        else:
-            fragment = f"#t={start_fragment},{end_fragment}"
-
-        playback_uri = f"{file_uri}{fragment}"
-        logger.debug(
-            "Translated virtual track %s to %s (start=%s, end=%s)",
+        # Store start and end times for manual seeking and monitoring
+        self._current_virtual_track_start_ms = start_ms if start_ms is not None else 0
+        self._current_virtual_track_end_ms = end_ms
+        self._seek_pending = True
+        
+        logger.info(
+            "Virtual track %s: file=%s, start=%sms, end=%sms",
             uri,
-            playback_uri,
-            start_fragment,
-            end_fragment,
+            file_uri,
+            start_ms,
+            end_ms,
         )
         
-        # Store the end time for monitoring
-        self._current_virtual_track_end_ms = end_ms
-        
-        return playback_uri
+        # Return plain file URI - we'll seek manually
+        return file_uri
 
     def _start_monitor_timer(self):
         """Start monitoring playback position for virtual track boundaries."""
@@ -152,6 +134,10 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
     def _check_playback_position(self):
         """Check if playback has reached the virtual track boundary."""
         try:
+            # Perform pending seek if needed
+            if self._seek_pending:
+                self._perform_virtual_track_seek()
+            
             # Get current position from audio
             position_ms = self.audio.get_position().get()
             
@@ -178,6 +164,7 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
                 # Stop monitoring, the next track will start its own timer
                 self._monitor_timer_id = None
                 self._current_virtual_track_end_ms = None
+                self._current_virtual_track_start_ms = None
                 return False  # Stop this timer
 
             # Continue monitoring
@@ -188,7 +175,31 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             # Continue monitoring despite errors
             return True
 
+    def _perform_virtual_track_seek(self):
+        """Seek to the start position of a virtual track."""
+        if not self._seek_pending or self._current_virtual_track_start_ms is None:
+            return
+        
+        try:
+            logger.info(
+                "Seeking to virtual track start position: %dms",
+                self._current_virtual_track_start_ms,
+            )
+            # Seek to the start position
+            success = self.audio.set_position(self._current_virtual_track_start_ms).get()
+            if success:
+                logger.debug("Seek to %dms successful", self._current_virtual_track_start_ms)
+                self._seek_pending = False
+            else:
+                logger.warning("Seek to %dms failed", self._current_virtual_track_start_ms)
+                # Don't clear _seek_pending, will try again next timer tick
+        except Exception as exc:
+            logger.warning("Error seeking to virtual track start: %s", exc)
+            # Don't clear _seek_pending, will try again next timer tick
+
     def on_stop(self):
         """Called when playback stops."""
         self._stop_monitor_timer()
         self._current_virtual_track_end_ms = None
+        self._current_virtual_track_start_ms = None
+        self._seek_pending = False
