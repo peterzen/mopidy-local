@@ -54,7 +54,7 @@ class PlaybackProviderTest(unittest.TestCase):
         self.assertNotIn("#t=", file_uri)
         
     def test_translate_uri_virtual_track(self):
-        """Test URI translation for virtual tracks from CUE sheets."""
+        """Virtual tracks return plain file URI; provider sets offsets."""
         # Create backing file
         backing_file = self.media_dir / "album.flac"
         backing_file.touch()
@@ -89,10 +89,15 @@ class PlaybackProviderTest(unittest.TestCase):
         
         self.assertIsNotNone(file_uri)
         self.assertTrue(file_uri.startswith("file://"))
-        self.assertIn("#t=0.000,180.000", file_uri)
+        # Current behavior: do not append time fragment; provider handles seek/EOS
+        self.assertNotIn("#t=", file_uri)
+        # Provider should record virtual track boundaries and mark seek pending
+        self.assertEqual(provider._current_virtual_track_start_ms, 0)
+        self.assertEqual(provider._current_virtual_track_end_ms, 180000)
+        self.assertTrue(provider._seek_pending)
         
     def test_translate_uri_virtual_track_mid_album(self):
-        """Test URI translation for virtual track in middle of album."""
+        """Virtual mid-album track returns plain URI; offsets set."""
         # Create backing file
         backing_file = self.media_dir / "album.flac"
         backing_file.touch()
@@ -126,7 +131,11 @@ class PlaybackProviderTest(unittest.TestCase):
         file_uri = provider.translate_uri("local:track:album.cue#track2")
         
         self.assertIsNotNone(file_uri)
-        self.assertIn("#t=210.000,360.000", file_uri)
+        # No time fragment in URI; provider manages seek and EOS internally
+        self.assertNotIn("#t=", file_uri)
+        self.assertEqual(provider._current_virtual_track_start_ms, 210000)
+        self.assertEqual(provider._current_virtual_track_end_ms, 360000)
+        self.assertTrue(provider._seek_pending)
         
     def tearDown(self):
         """Clean up test fixtures."""
