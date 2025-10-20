@@ -314,7 +314,7 @@ class ScanCommand(commands.Command):
                 audio_file = cue_sheet.get_audio_file()
                 if not audio_file:
                     logger.warning(
-                        f"Skipping {cue_path}: No valid audio file found or multi-file CUE"
+                        "Skipping %s: No valid audio file found or multi-file CUE", cue_path
                     )
                     continue
                 
