@@ -415,7 +415,7 @@ class ScanCommand(commands.Command):
                     
                     # Add to library
                     library.add(track, cue_info=cue_info)
-                    logger.debug(f"Added virtual track: {track.uri}")
+                    logger.debug("Added virtual track: %s", track.uri)
                 
             except Exception as e:
                 logger.warning("Failed processing CUE sheet %s: %s", cue_path, e)
