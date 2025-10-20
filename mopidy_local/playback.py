@@ -63,8 +63,6 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._about_to_finish_requested = False
         self._pending_stream_change = False
         self._current_virtual_track_uri = None
-        self._pending_stream_change = False
-        self._current_virtual_track_uri = None
 
         # ⬇️ Local import to avoid circular import with actor.py
         from mopidy_local import translator
