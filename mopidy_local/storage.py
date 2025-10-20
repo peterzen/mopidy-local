@@ -103,10 +103,8 @@ class LocalStorageProvider:
         if track.album and track.album.name:  # FIXME: album required
             uri = translator.local_uri_to_file_uri(track.uri, self._media_dir)
             try:
-                # Only extract images if tags are provided
-                if tags is not None:
-                    images = self._extract_images(track.uri, tags)
-                    logger.debug("%s images: %s", track.uri, images)
+                images = self._extract_images(track.uri, tags)
+                logger.debug("%s images: %s", track.uri, images)
             except Exception as e:
                 logger.warning("Error extracting images for %s: %s", uri, e)
         try:
