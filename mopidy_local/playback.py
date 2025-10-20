@@ -2,7 +2,10 @@ import logging
 import pathlib
 from typing import Optional
 
+import pykka
 from mopidy import backend
+from mopidy.audio.listener import AudioListener
+from pykka.messages import ProxyCall
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,11 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._last_virtual_position_ms = 0
         # Track if we've locally emitted EOS to avoid duplicates
         self._virtual_eos_emitted = False
+        # Track about-to-finish hand-off to core
+        self._about_to_finish_requested = False
+        self._core_actor_ref = None
+        self._pending_stream_change = False
+        self._current_virtual_track_uri = None
 
     def translate_uri(self, uri):
         """Translate local URI to file URI, adding time fragment for virtual tracks."""
@@ -52,6 +60,11 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._seek_pending = False
         self._last_virtual_position_ms = 0
         self._virtual_eos_emitted = False
+        self._about_to_finish_requested = False
+        self._pending_stream_change = False
+        self._current_virtual_track_uri = None
+        self._pending_stream_change = False
+        self._current_virtual_track_uri = None
 
         # ⬇️ Local import to avoid circular import with actor.py
         from mopidy_local import translator
@@ -114,6 +127,9 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._seek_pending = True
         self._last_virtual_position_ms = 0
         self._virtual_eos_emitted = False
+        self._about_to_finish_requested = False
+        self._pending_stream_change = False
+        self._current_virtual_track_uri = file_uri
 
         logger.info(
             "Virtual track %s: file=%s, start=%sms, end=%sms",
@@ -141,6 +157,8 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             self._monitor_interval_ms, self._check_playback_position
         )
         self._virtual_eos_emitted = False
+        self._about_to_finish_requested = False
+        self._pending_stream_change = False
         logger.debug(
             "Started monitor: fast=%dms until seek completes (end=%dms)",
             self._monitor_interval_ms,
@@ -190,6 +208,37 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
                 relative = min(relative, virtual_length)
 
         return relative
+
+    def _trigger_about_to_finish(self) -> bool:
+        try:
+            if self._core_actor_ref is None:
+                from mopidy.core import actor as core_actor
+
+                core_refs = pykka.ActorRegistry.get_by_class(core_actor.Core)
+                if not core_refs:
+                    logger.warning(
+                        "Core actor not available; cannot queue next virtual track"
+                    )
+                    return False
+                self._core_actor_ref = core_refs[0]
+                logger.debug(
+                    "Cached core actor reference for about-to-finish: %s",
+                    self._core_actor_ref,
+                )
+
+            proxy_call = ProxyCall(
+                attr_path=["playback", "_on_about_to_finish"],
+                args=[],
+                kwargs={},
+            )
+            self._core_actor_ref.ask(proxy_call, block=True)
+            logger.debug("Core about-to-finish completed successfully")
+            self._about_to_finish_requested = True
+            self._pending_stream_change = True
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to trigger about-to-finish: %s", exc)
+            return False
 
     def _check_playback_position(self):
         """Return True to keep the timer, False to stop it."""
@@ -254,6 +303,22 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
                 not self._virtual_eos_emitted
                 and position_ms >= (end_ms - guard)
             ):
+                if not self._about_to_finish_requested:
+                    logger.debug(
+                        "Virtual boundary near (pos=%d end=%d guard=%d); "
+                        "triggering about-to-finish",
+                        position_ms,
+                        end_ms,
+                        guard,
+                    )
+                    if not self._trigger_about_to_finish():
+                        logger.warning(
+                            "Unable to queue next virtual track; suppressing EOS"
+                        )
+                        return True
+
+                handoff_in_progress = self._about_to_finish_requested
+
                 logger.info(
                     "Virtual boundary hit: pos=%d end=%d (guard=%d) -> EOS",
                     position_ms,
@@ -262,14 +327,27 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
                 )
                 try:
                     self._virtual_eos_emitted = True
-                    self.audio.emit_end_of_stream()
+                    emit = getattr(self.audio, "emit_end_of_stream", None)
+                    if emit is not None:
+                        result = emit()
+                        if hasattr(result, "get"):
+                            result.get()
+                    else:
+                        AudioListener.send("reached_end_of_stream")
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("emit_end_of_stream failed: %s", exc)
 
-                # Clear state and stop; next track will start its own monitor
-                self._current_virtual_track_end_ms = None
-                self._current_virtual_track_start_ms = None
-                self._monitor_timer_id = None
+                if not handoff_in_progress:
+                    # Legacy path: no follow-up track prepared; reset monitoring
+                    self._current_virtual_track_end_ms = None
+                    self._current_virtual_track_start_ms = None
+                    self._monitor_timer_id = None
+                else:
+                    logger.debug(
+                        "Preserving virtual track state for pending hand-off"
+                    )
+
+                self._about_to_finish_requested = False
                 return False
 
             return True
@@ -333,6 +411,15 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
                 absolute
             ) or 0
             self._virtual_eos_emitted = False
+            if self._pending_stream_change and self._current_virtual_track_uri:
+                logger.debug(
+                    "Emitting synthetic stream_changed for %s",
+                    self._current_virtual_track_uri,
+                )
+                AudioListener.send(
+                    "stream_changed", uri=self._current_virtual_track_uri
+                )
+            self._pending_stream_change = False
         return success
 
     def _perform_virtual_track_seek(self):
@@ -354,6 +441,15 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
                 self._seek_pending = False
                 self._last_virtual_position_ms = 0
                 self._virtual_eos_emitted = False
+                if self._pending_stream_change and self._current_virtual_track_uri:
+                    logger.debug(
+                        "Emitting synthetic stream_changed for %s",
+                        self._current_virtual_track_uri,
+                    )
+                    AudioListener.send(
+                        "stream_changed", uri=self._current_virtual_track_uri
+                    )
+                self._pending_stream_change = False
             else:
                 logger.warning("Seek to %dms failed", seek_start)
                 # Don't clear _seek_pending, will try again next timer tick
@@ -370,3 +466,4 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._seek_pending = False
         self._last_virtual_position_ms = 0
         self._virtual_eos_emitted = False
+        self._about_to_finish_requested = False
