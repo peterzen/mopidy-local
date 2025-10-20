@@ -418,7 +418,7 @@ class ScanCommand(commands.Command):
                     logger.debug(f"Added virtual track: {track.uri}")
                 
             except Exception as e:
-                logger.warning(f"Failed processing CUE sheet {cue_path}: {e}")
+                logger.warning("Failed processing CUE sheet %s: %s", cue_path, e)
             
             if progress.increment():
                 progress.log()
