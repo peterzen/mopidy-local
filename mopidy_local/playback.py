@@ -198,11 +198,12 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
                     self._current_virtual_track_end_ms,
                 )
                 # Trigger end of stream to advance to next track
-                # Use .get() to ensure the EOS signal is processed before we continue
+                # Don't wait for completion - let it process asynchronously
                 try:
-                    self.audio.emit_end_of_stream().get()
+                    self.audio.emit_end_of_stream()
                 except Exception as e:
                     logger.warning("Failed to emit end of stream: %s", e)
+                    # Even if EOS fails, clean up our state
                 
                 # Clear virtual track state
                 self._current_virtual_track_end_ms = None
