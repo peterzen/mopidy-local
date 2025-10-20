@@ -307,7 +307,7 @@ class ScanCommand(commands.Command):
                 # Parse the CUE sheet
                 cue_sheet = cueparser.parse_cue_sheet(cue_path)
                 if not cue_sheet:
-                    logger.warning(f"Failed to parse CUE sheet: {cue_path}")
+                    logger.warning("Failed to parse CUE sheet: %s", cue_path)
                     continue
                 
                 # Get the audio file
