@@ -214,7 +214,7 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
 
                 core_refs = pykka.ActorRegistry.get_by_class(core_actor.Core)
                 if not core_refs:
-                    logger.warning(
+                    logger.info(
                         "Core actor not available; cannot queue next virtual track"
                     )
                     return False
