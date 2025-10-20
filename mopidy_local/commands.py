@@ -332,7 +332,7 @@ class ScanCommand(commands.Command):
                     file_duration_ms = result.duration
                 except Exception as e:
                     logger.warning(
-                        f"Failed to scan audio file for {cue_path}: {e}"
+                        "Failed to scan audio file for %s: %s", cue_path, e
                     )
                     continue
                 
