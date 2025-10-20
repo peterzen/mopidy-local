@@ -4,9 +4,9 @@ from typing import Optional
 
 from mopidy import backend
 
-from mopidy_local import translator
-
 logger = logging.getLogger(__name__)
+
+__all__ = ["LocalPlaybackProvider"]
 
 try:
     from gi.repository import GLib
@@ -19,6 +19,8 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
     def __init__(self, audio, backend):
         super().__init__(audio, backend)
         self._monitor_timer_id = None
+        self._monitor_interval_ms = 0
+        self._monitor_fast_deadline_monotonic = None
         self._current_virtual_track_end_ms = None
         self._current_virtual_track_start_ms = None
         self._seek_pending = False
@@ -35,6 +37,10 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._can_fade_via_volume = hasattr(self.audio, "set_volume") and hasattr(
             self.audio, "get_volume"
         )
+        # Last position we reported to core/clients (already normalized)
+        self._last_virtual_position_ms = 0
+        # Track if we've locally emitted EOS to avoid duplicates
+        self._virtual_eos_emitted = False
 
     def translate_uri(self, uri):
         """Translate local URI to file URI, adding time fragment for virtual tracks."""
@@ -61,6 +67,12 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._seek_pending = False
         # No monitoring for regular tracks; ensure fade timers are clean.
         self._cancel_fade_timer()
+        self._last_virtual_position_ms = 0
+        self._virtual_eos_emitted = False
+
+        # ⬇️ Local import to avoid circular import with actor.py
+        from mopidy_local import translator
+
         fallback_uri = translator.local_uri_to_file_uri(
             uri, self.backend.config["local"]["media_dir"]
         )
@@ -117,6 +129,8 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         self._current_virtual_track_start_ms = start_ms if start_ms is not None else 0
         self._current_virtual_track_end_ms = end_ms
         self._seek_pending = True
+        self._last_virtual_position_ms = 0
+        self._virtual_eos_emitted = False
 
         logger.info(
             "Virtual track %s: file=%s, start=%sms, end=%sms",
@@ -135,47 +149,117 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
         if GLib is None or self._current_virtual_track_end_ms is None:
             return
 
-        # Start with fast interval (50ms) for immediate seek, then slow down
-        self._monitor_timer_id = GLib.timeout_add(50, self._check_playback_position)
+        # Fast tick for up to 3 seconds while we wait to complete the initial seek
+        self._monitor_fast_deadline_monotonic = (
+            GLib.get_monotonic_time() + 3_000_000
+        )  # µs
+        self._monitor_interval_ms = 50
+        self._monitor_timer_id = GLib.timeout_add(
+            self._monitor_interval_ms, self._check_playback_position
+        )
+        self._virtual_eos_emitted = False
         logger.debug(
-            "Started position monitor for virtual track (end=%dms)",
+            "Started monitor: fast=%dms until seek completes (end=%dms)",
+            self._monitor_interval_ms,
             self._current_virtual_track_end_ms,
         )
 
     def _stop_monitor_timer(self):
         """Stop the position monitoring timer."""
         if self._monitor_timer_id is not None and GLib is not None:
-            GLib.source_remove(self._monitor_timer_id)
-            self._monitor_timer_id = None
-            logger.debug("Stopped position monitor")
+            try:
+                GLib.source_remove(self._monitor_timer_id)
+            except Exception:  # noqa: BLE001
+                pass
+        self._monitor_timer_id = None
+        self._monitor_fast_deadline_monotonic = None
+        logger.debug("Stopped position monitor")
+
+    def _virtual_relative_position(
+        self, absolute_ms: Optional[int]
+    ) -> Optional[int]:
+        """Convert absolute pipeline position to virtual-track-relative ms."""
+        if absolute_ms is None:
+            return None
+
+        start_ms = self._current_virtual_track_start_ms
+        if start_ms is None:
+            # Not a virtual track; position already relative.
+            return max(0, int(absolute_ms))
+
+        try:
+            relative = int(absolute_ms) - int(start_ms)
+        except Exception:
+            # Defensive: fall back to zero if conversion fails
+            return 0
+
+        if relative < 0:
+            # During preroll/seek, keep position clipped at 0.
+            return 0
+
+        end_ms = self._current_virtual_track_end_ms
+        if end_ms is not None:
+            try:
+                virtual_length = max(0, int(end_ms) - int(start_ms))
+            except Exception:
+                virtual_length = None
+            if virtual_length is not None:
+                relative = min(relative, virtual_length)
+
+        return relative
 
     def _check_playback_position(self):
-        """Check if playback has reached the virtual track boundary."""
+        """Return True to keep the timer, False to stop it."""
         try:
-            # Perform pending seek if needed (only once when playback is ready)
+            # One actor round-trip per tick
+            pos_future = self.audio.get_position()
+            position_ms = pos_future.get()  # may be None during preroll
+
+            # Handle pending seek first
             if self._seek_pending:
-                # Get current position to check if playback has started
-                position_ms = self.audio.get_position().get()
-                if position_ms is not None:
-                    # Playback is ready, perform the seek
-                    self._perform_virtual_track_seek()
-                    # After successful seek, switch to slower monitoring interval
-                    if not self._seek_pending:  # seek completed
+                # Try the seek on every tick until it sticks.
+                self._perform_virtual_track_seek()
+                if not self._seek_pending:
+                    # switch to slower cadence immediately
+                    self._stop_monitor_timer()
+                    self._monitor_interval_ms = 1000
+                    self._monitor_timer_id = GLib.timeout_add(
+                        self._monitor_interval_ms,
+                        self._check_playback_position,
+                    )
+                    logger.debug(
+                        "Seek done; monitoring every %dms",
+                        self._monitor_interval_ms,
+                    )
+                    return False  # the old fast timer is gone
+
+                # Give preroll some time; avoid hammering if audio loop is busy.
+                if position_ms is None:
+                    # Cap the fast phase to ~3s
+                    if GLib.get_monotonic_time() > (
+                        self._monitor_fast_deadline_monotonic or 0
+                    ):
+                        logger.debug(
+                            "Seek still pending; switching to 250ms cadence to reduce load"
+                        )
                         self._stop_monitor_timer()
-                        # Restart with slower interval for boundary monitoring
-                        self._monitor_timer_id = GLib.timeout_add(500, self._check_playback_position)
-                        logger.debug("Switched to 500ms monitoring interval after seek")
-                # Continue fast polling until seek completes
-                return True
-            
-            # Get current position from audio
-            position_ms = self.audio.get_position().get()
-            
+                        self._monitor_interval_ms = 250
+                        self._monitor_timer_id = GLib.timeout_add(
+                            self._monitor_interval_ms,
+                            self._check_playback_position,
+                        )
+                        return False
+                return True  # keep polling
+
+            # From here: ACTIVE monitoring
             if position_ms is None:
-                # Playback hasn't started yet or is stopped
-                return True  # Continue monitoring
-            
-            # Trigger fade-in once playback is rolling
+                return True  # playback not started or pause; keep timer
+
+            normalized = self._virtual_relative_position(position_ms)
+            if normalized is not None:
+                self._last_virtual_position_ms = normalized
+
+            # Kick off fade once (no blocking ops here)
             if (
                 not self._fade_active
                 and self._fade_in_ms > 0
@@ -183,48 +267,104 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             ):
                 self._start_volume_fade()
 
-            if self._current_virtual_track_end_ms is None:
-                # No virtual track active, stop monitoring
+            end_ms = self._current_virtual_track_end_ms
+            if end_ms is None:
+                # No longer a virtual track; stop timer
                 self._monitor_timer_id = None
                 return False
 
-            # Check if we've reached or passed the end time
-            # Use a small buffer (100ms) to ensure we don't miss the boundary
-            if position_ms >= (self._current_virtual_track_end_ms - 100):
+            # Adaptive guard band: 2x our interval
+            guard = max(100, 2 * self._monitor_interval_ms)
+            if (
+                not self._virtual_eos_emitted
+                and position_ms >= (end_ms - guard)
+            ):
                 logger.info(
-                    "Virtual track boundary reached (pos=%dms, end=%dms), "
-                    "triggering EOS",
+                    "Virtual boundary hit: pos=%d end=%d (guard=%d) -> EOS",
                     position_ms,
-                    self._current_virtual_track_end_ms,
+                    end_ms,
+                    guard,
                 )
-                # Trigger end of stream to advance to next track
-                # Don't wait for completion - let it process asynchronously
                 try:
+                    self._virtual_eos_emitted = True
                     self.audio.emit_end_of_stream()
-                except Exception as e:
-                    logger.warning("Failed to emit end of stream: %s", e)
-                    # Even if EOS fails, clean up our state
-                
-                # Clear virtual track state
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("emit_end_of_stream failed: %s", exc)
+
+                # Clear state and stop; next track will start its own monitor
                 self._current_virtual_track_end_ms = None
                 self._current_virtual_track_start_ms = None
-                # Stop monitoring, the next track will start its own timer
                 self._monitor_timer_id = None
-                return False  # Stop this timer
+                return False
 
-            # Continue monitoring
             return True
 
-        except Exception as exc:
-            logger.warning("Error checking playback position: %s", exc)
-            # Continue monitoring despite errors
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Error in position monitor: %s", exc)
             return True
+
+    def get_time_position(self):  # noqa: D401 - inherited docstring
+        """Get current playback position, normalized for virtual tracks."""
+        try:
+            position_ms = self.audio.get_position().get()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "Falling back to last known virtual position after error: %s", exc
+            )
+            return self._last_virtual_position_ms
+
+        if position_ms is None:
+            return self._last_virtual_position_ms
+
+        normalized = self._virtual_relative_position(position_ms)
+        if normalized is None:
+            return self._last_virtual_position_ms
+
+        self._last_virtual_position_ms = normalized
+        return normalized
+
+    def seek(self, time_position: int) -> bool:
+        """Seek within the virtual track, translating to absolute position."""
+        if time_position is None:
+            return False
+
+        start_ms = self._current_virtual_track_start_ms
+        if start_ms is None:
+            return self.audio.set_position(time_position).get()
+
+        try:
+            requested = max(0, int(time_position))
+        except Exception:
+            logger.warning("Invalid seek request %r; ignoring", time_position)
+            return False
+
+        absolute = int(start_ms) + requested
+        end_ms = self._current_virtual_track_end_ms
+        if end_ms is not None:
+            try:
+                absolute = min(absolute, int(end_ms))
+            except Exception:
+                pass
+
+        try:
+            success = self.audio.set_position(absolute).get()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Error seeking within virtual track: %s", exc)
+            return False
+
+        if success:
+            self._seek_pending = False
+            self._last_virtual_position_ms = self._virtual_relative_position(
+                absolute
+            ) or 0
+            self._virtual_eos_emitted = False
+        return success
 
     def _perform_virtual_track_seek(self):
         """Seek to the start position of a virtual track."""
         if not self._seek_pending or self._current_virtual_track_start_ms is None:
             return
-        
+
         try:
             logger.info(
                 "Seeking to virtual track start position: %dms",
@@ -247,6 +387,8 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             if success:
                 logger.debug("Seek to %dms successful", seek_start)
                 self._seek_pending = False
+                self._last_virtual_position_ms = 0
+                self._virtual_eos_emitted = False
             else:
                 logger.warning("Seek to %dms failed", seek_start)
                 # Don't clear _seek_pending, will try again next timer tick
@@ -257,10 +399,13 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
     def on_stop(self):
         """Called when playback stops."""
         self._stop_monitor_timer()
+        self._monitor_interval_ms = 0
         self._current_virtual_track_end_ms = None
         self._current_virtual_track_start_ms = None
         self._seek_pending = False
         self._cancel_fade_timer()
+        self._last_virtual_position_ms = 0
+        self._virtual_eos_emitted = False
 
     # --- Fade-in helpers -------------------------------------------------
 
@@ -297,7 +442,9 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
 
             # Start from 0, then ramp to target.
             try:
-                self.audio.set_volume(0)
+                mute_result = self.audio.set_volume(0)
+                if hasattr(mute_result, "get"):
+                    mute_result.get()
             except Exception:  # noqa: BLE001
                 logger.debug("Audio.set_volume not available; skipping fade ramp")
                 return
@@ -333,7 +480,11 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             if self._fade_step_index >= self._fade_steps_total:
                 # Final step; set to target and stop timer
                 try:
-                    self.audio.set_volume(int(self._fade_target_volume))
+                    final_result = self.audio.set_volume(
+                        int(self._fade_target_volume)
+                    )
+                    if hasattr(final_result, "get"):
+                        final_result.get()
                 finally:
                     self._cancel_fade_timer()
                 return False
@@ -341,7 +492,12 @@ class LocalPlaybackProvider(backend.PlaybackProvider):
             # Intermediate step
             fraction = self._fade_step_index / float(self._fade_steps_total)
             new_vol = int(round(self._fade_target_volume * fraction))
-            self.audio.set_volume(new_vol)
+            try:
+                vol_result = self.audio.set_volume(new_vol)
+                if hasattr(vol_result, "get"):
+                    vol_result.get()
+            except Exception:  # noqa: BLE001
+                pass
             return True
         except Exception:  # noqa: BLE001
             # On any error, stop trying to fade

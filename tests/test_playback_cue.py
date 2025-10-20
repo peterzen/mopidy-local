@@ -11,6 +11,42 @@ from mopidy.models import Album, Artist, Track
 from mopidy_local import playback, schema
 
 
+class _StaticFuture:
+    """Simple future-like helper to mimic the audio actor API in tests."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def get(self, timeout=None):  # noqa: D401 - mimics pykka.Future API
+        return self._value
+
+
+class StubAudio:
+    """Minimal audio proxy used to exercise virtual-track logic."""
+
+    def __init__(self, position=0, volume=100):
+        self.position = position
+        self.volume = volume
+        self.eos_called = False
+
+    def get_position(self):
+        return _StaticFuture(self.position)
+
+    def set_position(self, position):
+        self.position = position
+        return _StaticFuture(True)
+
+    def get_volume(self):
+        return _StaticFuture(self.volume)
+
+    def set_volume(self, volume):
+        self.volume = volume
+        return _StaticFuture(True)
+
+    def emit_end_of_stream(self):
+        self.eos_called = True
+
+
 class PlaybackProviderTest(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
@@ -136,7 +172,51 @@ class PlaybackProviderTest(unittest.TestCase):
         self.assertEqual(provider._current_virtual_track_start_ms, 210000)
         self.assertEqual(provider._current_virtual_track_end_ms, 360000)
         self.assertTrue(provider._seek_pending)
-        
+
+    def test_get_time_position_virtual_track_relative(self):
+        """Provider should report positions relative to virtual start."""
+        backend = self._mock_backend()
+        audio = StubAudio(position=978120)
+        provider = playback.LocalPlaybackProvider(audio, backend)
+        provider._current_virtual_track_start_ms = 978120
+        provider._current_virtual_track_end_ms = 1209480
+        provider._seek_pending = False
+
+        # Initial position at the virtual start should be normalized to zero.
+        self.assertEqual(provider.get_time_position(), 0)
+
+        # Advance five seconds into the virtual slice.
+        audio.position = 978120 + 5000
+        self.assertEqual(provider.get_time_position(), 5000)
+
+        # Mopidy can temporarily return None during preroll; ensure we keep last known.
+        audio.position = None
+        self.assertEqual(provider.get_time_position(), 5000)
+
+    def test_seek_virtual_track_translates_offsets(self):
+        """Seek requests should be translated to absolute backing positions."""
+        backend = self._mock_backend()
+        audio = StubAudio(position=0)
+        provider = playback.LocalPlaybackProvider(audio, backend)
+        provider._current_virtual_track_start_ms = 210000
+        provider._current_virtual_track_end_ms = 360000
+        provider._seek_pending = False
+
+        # Seek 5 seconds into the virtual track.
+        self.assertTrue(provider.seek(5000))
+        self.assertEqual(audio.position, 215000)
+        self.assertEqual(provider._last_virtual_position_ms, 5000)
+
+        # Large seek should clamp to track end.
+        self.assertTrue(provider.seek(999999))
+        self.assertEqual(audio.position, 360000)
+        self.assertEqual(provider._last_virtual_position_ms, 150000)
+
+        # Negative seeks clamp at the virtual start boundary.
+        self.assertTrue(provider.seek(-100))
+        self.assertEqual(audio.position, 210000)
+        self.assertEqual(provider._last_virtual_position_ms, 0)
+
     def tearDown(self):
         """Clean up test fixtures."""
         import shutil
