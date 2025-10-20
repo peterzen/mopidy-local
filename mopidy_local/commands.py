@@ -298,7 +298,7 @@ class ScanCommand(commands.Command):
             logger.info("No CUE sheets found")
             return
         
-        logger.info(f"Found {len(cue_files)} CUE sheets")
+        logger.info("Found %d CUE sheets", len(cue_files))
         progress = _ScanProgress(batch_size=flush_threshold, total=len(cue_files))
         scanner = scan.Scanner(10000)  # 10 second timeout for audio file scan
         
