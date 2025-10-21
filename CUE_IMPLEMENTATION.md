@@ -97,13 +97,6 @@ pytest tests/test_playback_cue.py -v
 3. **Seekable required**: Backing audio file must support seeking
 4. **No replaygain**: ReplayGain tags in CUE sheets are ignored
 
-## Future Enhancements (Optional)
-
-- Configuration option: `cue_support_enabled` (default: true)
-- Configuration option: `hide_backing_file_when_cue_present` (default: true)
-- Support for embedded CUE sheets (CUESHEET tag in FLAC)
-- Better error messages for unsupported CUE features
-
 ## Migration
 
 When upgrading, the database will automatically migrate from v7 to v8:
