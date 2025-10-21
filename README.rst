@@ -120,6 +120,80 @@ The following configuration values are available:
   for external album art. These may contain UNIX shell patterns,
   i.e. ``*``, ``?``, etc.
 
+CUE Sheet Support
+=================
+
+Mopidy-Local supports CUE sheets for single-file albums. This allows you to
+have a single audio file (e.g., FLAC, APE, WAV) with a `.cue` file that defines
+individual tracks within that file.
+
+Features
+--------
+
+- Automatic detection and parsing of `.cue` files during library scanning
+- Virtual tracks created from CUE sheet metadata
+- Proper track seeking and playback boundaries
+- Support for track-specific metadata (title, performer, etc.)
+- Support for album-level metadata (album artist, date, genre)
+
+Limitations
+-----------
+
+- **Single-file CUE sheets only**: Multi-file CUE sheets are not supported
+- **Local files only**: CUE sheets must reference local audio files
+- **No replaygain support**: Replaygain tags in CUE sheets are ignored
+- **Seekable sources only**: The backing audio file must be seekable
+
+How it works
+------------
+
+When you run ``mopidy local scan``, the scanner will:
+
+1. Find all `.cue` files in your media directory
+2. Parse each CUE sheet to extract track information
+3. Scan the referenced audio file to get its duration
+4. Create virtual track entries in the library database
+5. Each virtual track appears as a normal track in your library
+
+The virtual tracks contain timing information (start/end positions) that tells
+Mopidy where to seek within the backing audio file during playback.
+
+Example
+-------
+
+Given these files in your music directory::
+
+    /music/
+      MyAlbum/
+        album.flac      (single FLAC file containing entire album)
+        album.cue       (CUE sheet defining 10 tracks)
+
+After running ``mopidy local scan``, your library will contain 10 individual
+tracks, each with proper metadata from the CUE sheet. When you play track 5,
+Mopidy will:
+
+1. Open ``album.flac``
+2. Seek to the start position defined in the CUE sheet
+3. Play until the end position (start of track 6)
+
+CUE Sheet Format
+----------------
+
+Mopidy-Local supports standard CUE sheet format. Here's a minimal example::
+
+    PERFORMER "Artist Name"
+    TITLE "Album Title"
+    FILE "album.flac" WAVE
+      TRACK 01 AUDIO
+        TITLE "Track 1"
+        INDEX 01 00:00:00
+      TRACK 02 AUDIO
+        TITLE "Track 2"
+        INDEX 01 03:45:27
+
+For more information about CUE sheet format, see the `CDRWIN CUE sheet format
+<https://en.wikipedia.org/wiki/Cue_sheet_(computing)>`_ documentation.
+
 
 Usage
 =====
