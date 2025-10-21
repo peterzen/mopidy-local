@@ -288,11 +288,9 @@ class ScanCommand(commands.Command):
         """Scan CUE sheet files and add virtual tracks."""
         logger.info("Scanning for CUE sheets...")
         
-        # Find all .cue files
-        cue_files = []
-        for absolute_path in file_mtimes:
-            if absolute_path.suffix.lower() == '.cue':
-                cue_files.append(absolute_path)
+        cue_files = [
+            path for path in file_mtimes if path.suffix.lower() == ".cue"
+        ]
         
         if not cue_files:
             logger.info("No CUE sheets found")
@@ -304,118 +302,156 @@ class ScanCommand(commands.Command):
         
         for cue_path in sorted(cue_files):
             try:
-                # Parse the CUE sheet
                 cue_sheet = cueparser.parse_cue_sheet(cue_path)
                 if not cue_sheet:
                     logger.warning("Failed to parse CUE sheet: %s", cue_path)
                     continue
-                
-                # Get the audio file
-                audio_file = cue_sheet.get_audio_file()
-                if not audio_file:
-                    logger.warning(
-                        "Skipping %s: No valid audio file found or multi-file CUE", cue_path
-                    )
-                    continue
-                
-                # Scan the audio file to get its duration
-                try:
-                    audio_uri = audio_file.as_uri()
-                    result = scanner.scan(audio_uri)
-                    
-                    if not result.playable or result.duration is None:
-                        logger.warning(
-                            f"Skipping {cue_path}: Audio file not playable or no duration"
+
+                tracks_by_file: dict[str, list[cueparser.CueTrack]] = {}
+                for cue_track in cue_sheet.tracks:
+                    if not cue_track.file:
+                        logger.debug(
+                            "Skipping track %s in %s: no backing FILE entry",
+                            cue_track.number,
+                            cue_path,
                         )
                         continue
-                    
-                    file_duration_ms = result.duration
-                except Exception as e:
-                    logger.warning(
-                        "Failed to scan audio file for %s: %s", cue_path, e
+                    tracks_by_file.setdefault(cue_track.file, []).append(cue_track)
+
+                multi_track_files = {
+                    name: tracks
+                    for name, tracks in tracks_by_file.items()
+                    if len(tracks) >= 2
+                }
+
+                if not multi_track_files:
+                    logger.debug(
+                        "Skipping %s: requires at least two tracks sharing a backing file",
+                        cue_path,
                     )
                     continue
-                
-                # Generate virtual tracks
-                mtime = file_mtimes.get(cue_path)
-                for cue_track in cue_sheet.tracks:
-                    # Use track end time or file duration for last track
-                    end_ms = cue_track.end_ms
-                    if end_ms is None:
-                        end_ms = file_duration_ms
-                    
-                    # Create track metadata
-                    track_artist = cue_track.performer or cue_sheet.performer
-                    album_artist = cue_sheet.performer
-                    
-                    # Build artists
-                    artists = []
-                    if track_artist:
-                        artist_uri = storage.model_uri(
-                            "artist",
-                            Artist(name=track_artist)
+
+                album = None
+                if cue_sheet.title:
+                    album_artists = None
+                    if cue_sheet.performer:
+                        albumartist_uri = storage.model_uri(
+                            "artist", Artist(name=cue_sheet.performer)
                         )
-                        artists = [Artist(uri=artist_uri, name=track_artist)]
-                    
-                    # Build album
-                    album = None
-                    if cue_sheet.title:
-                        album_artists = []
-                        if album_artist:
-                            albumartist_uri = storage.model_uri(
-                                "artist",
-                                Artist(name=album_artist)
-                            )
-                            album_artists = [
-                                Artist(uri=albumartist_uri, name=album_artist)
-                            ]
-                        
-                        album_uri = storage.model_uri(
-                            "album",
-                            Album(
-                                name=cue_sheet.title,
-                                artists=frozenset(album_artists) if album_artists else None,
-                                num_tracks=len(cue_sheet.tracks),
-                                date=cue_sheet.date,
-                            )
+                        album_artists = frozenset(
+                            [Artist(uri=albumartist_uri, name=cue_sheet.performer)]
                         )
-                        album = Album(
-                            uri=album_uri,
+                    album_uri = storage.model_uri(
+                        "album",
+                        Album(
                             name=cue_sheet.title,
-                            artists=frozenset(album_artists) if album_artists else None,
+                            artists=album_artists,
                             num_tracks=len(cue_sheet.tracks),
                             date=cue_sheet.date,
-                        )
-                    
-                    # Create virtual track URI
-                    # Use CUE path + track number to create unique URI
-                    relative_cue = cue_path.relative_to(media_dir)
-                    virtual_uri = f"local:track:{relative_cue}#track{cue_track.number}"
-                    
-                    # Build track
-                    track = Track(
-                        uri=virtual_uri,
-                        name=cue_track.title or f"Track {cue_track.number}",
-                        artists=frozenset(artists) if artists else None,
-                        album=album,
-                        track_no=cue_track.number,
-                        genre=cue_sheet.genre,
-                        date=cue_sheet.date,
-                        length=end_ms - cue_track.start_ms,
-                        comment=cue_sheet.comment,
-                        last_modified=mtime,
+                        ),
                     )
-                    
-                    # Prepare CUE info for database
-                    cue_info = {
-                        "backing_file": str(audio_file.relative_to(media_dir)),
-                        "start_ms": cue_track.start_ms,
-                        "end_ms": end_ms,
-                    }
-                    
-                    # Add to library
-                    library.add(track, cue_info=cue_info)
-                    logger.debug("Added virtual track: %s", track.uri)
+                    album = Album(
+                        uri=album_uri,
+                        name=cue_sheet.title,
+                        artists=album_artists,
+                        num_tracks=len(cue_sheet.tracks),
+                        date=cue_sheet.date,
+                    )
+
+                try:
+                    relative_cue = cue_path.relative_to(media_dir)
+                except ValueError:
+                    logger.warning(
+                        "Skipping %s: CUE file not under media dir %s",
+                        cue_path,
+                        media_dir,
+                    )
+                    continue
+
+                for file_name, cue_tracks in multi_track_files.items():
+                    backing_path = cue_path.parent / file_name
+                    if not backing_path.exists():
+                        logger.warning(
+                            "Skipping tracks in %s: backing file missing %s",
+                            cue_path,
+                            backing_path,
+                        )
+                        continue
+
+                    try:
+                        result = scanner.scan(backing_path.as_uri())
+                    except Exception as error:
+                        logger.warning(
+                            "Failed to scan %s backing %s: %s",
+                            cue_path,
+                            backing_path,
+                            error,
+                        )
+                        continue
+
+                    if not result.playable or result.duration is None:
+                        logger.warning(
+                            "Skipping %s tracks in %s: audio not playable or duration unknown",
+                            backing_path.name,
+                            cue_path,
+                        )
+                        continue
+
+                    file_duration_ms = result.duration
+
+                    try:
+                        backing_rel = backing_path.relative_to(media_dir)
+                    except ValueError:
+                        logger.warning(
+                            "Skipping %s: backing file not under media dir %s",
+                            backing_path,
+                            media_dir,
+                        )
+                        continue
+
+                    mtime = file_mtimes.get(cue_path)
+                    for cue_track in cue_tracks:
+                        start_ms = cue_track.start_ms or 0
+                        end_ms = cue_track.end_ms or file_duration_ms
+                        if end_ms < start_ms:
+                            end_ms = start_ms
+
+                        track_artist = cue_track.performer or cue_sheet.performer
+                        artists = None
+                        if track_artist:
+                            artist_uri = storage.model_uri(
+                                "artist", Artist(name=track_artist)
+                            )
+                            artists = frozenset(
+                                [Artist(uri=artist_uri, name=track_artist)]
+                            )
+
+                        virtual_uri = (
+                            f"local:track:{relative_cue}#track{cue_track.number}"
+                        )
+                        track = Track(
+                            uri=virtual_uri,
+                            name=cue_track.title or f"Track {cue_track.number}",
+                            artists=artists,
+                            album=album,
+                            track_no=cue_track.number,
+                            genre=cue_sheet.genre,
+                            date=cue_sheet.date,
+                            length=end_ms - start_ms,
+                            comment=cue_sheet.comment,
+                            last_modified=mtime,
+                        )
+
+                        cue_info = {
+                            "backing_file": str(backing_rel),
+                            "start_ms": start_ms,
+                            "end_ms": end_ms,
+                        }
+
+                        library.add(track, cue_info=cue_info)
+                        logger.debug(
+                            "Added virtual track %s backing %s", track.uri, backing_path
+                        )
                 
             except Exception as e:
                 logger.warning("Failed processing CUE sheet %s: %s", cue_path, e)

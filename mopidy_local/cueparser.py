@@ -24,6 +24,7 @@ class CueTrack:
         self.end_ms: Optional[int] = None
         self.index_00_ms: Optional[int] = None  # Pre-gap
         self.index_01_ms: Optional[int] = None  # Start of track
+        self.file: Optional[str] = None
 
 
 class CueSheet:
@@ -177,6 +178,7 @@ def _parse_cue_content(cue_path: pathlib.Path, content: str) -> CueSheet:
             if match:
                 track_num = int(match.group(1))
                 current_track = CueTrack(track_num)
+                current_track.file = current_file
                 sheet.tracks.append(current_track)
         
         elif line.startswith('INDEX '):
@@ -202,8 +204,11 @@ def _parse_cue_content(cue_path: pathlib.Path, content: str) -> CueSheet:
         # End time is the start of the next track, or will be set to file duration
         if i + 1 < len(sheet.tracks):
             next_track = sheet.tracks[i + 1]
-            # Use INDEX 00 of next track if available, otherwise INDEX 01
-            track.end_ms = next_track.index_00_ms or next_track.index_01_ms
+            if next_track.file == track.file:
+                # Use INDEX 00 of next track if available, otherwise INDEX 01
+                track.end_ms = next_track.index_00_ms or next_track.index_01_ms
+            else:
+                track.end_ms = None
         # else: end_ms will be set to file duration during scanning
     
     return sheet
